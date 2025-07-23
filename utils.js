@@ -1,8 +1,15 @@
+const { ipcRenderer } = require('electron')
+const crypto = require('crypto')
+const path = require('path')
+const fs = require('fs')
+// require('./loadEnv').loadEnvironment()
+
 /**
  * Updates the status badge with the provided text and status type.
  * @param {string} text
  * @param {'info' | 'success' | 'error' | 'warning'} statusType
  */
+
 function updateStatus(text, statusType = 'info') {
   const statusEl = document.getElementById('status')
   if (!statusEl) {
@@ -44,4 +51,45 @@ function getTableData() {
   return data
 }
 
-module.exports = { getTableData, updateStatus }
+function signData(licenseKey, organization, deviceFingerprint) {
+  const secret = process.env.LICENSE_SECRET
+  if (!secret) {
+    throw new Error('❌ LICENSE_SECRET is not defined in environment.')
+  }
+  const payload = `${licenseKey}|${organization}|${deviceFingerprint}`
+  return crypto.createHmac('sha256', secret).update(payload).digest('hex')
+}
+
+const logError = async (message, err) => {
+  try {
+    const userDataPath = await ipcRenderer.invoke('get-user-data-path')
+    const logPath = path.join(userDataPath, 'error.log')
+    const logMessage = `${new Date().toISOString()} - ${message} ${
+      err?.stack || err
+    }\n`
+    fs.appendFileSync(logPath, logMessage)
+  } catch (error) {
+    console.error('⚠️ Failed to write error log:', error)
+  }
+}
+
+function logMainError(message, err) {
+  try {
+    const { app } = require('electron')
+    const logPath = path.join(app.getPath('userData'), 'error.log')
+    const logMessage = `${new Date().toISOString()} - ${message} ${
+      err?.stack || err
+    }\n`
+    fs.appendFileSync(logPath, logMessage)
+  } catch (e) {
+    console.error('⚠️ Failed to write to error.log:', e)
+  }
+}
+
+module.exports = {
+  getTableData,
+  updateStatus,
+  signData,
+  logError,
+  logMainError,
+}

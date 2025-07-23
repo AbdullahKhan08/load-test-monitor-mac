@@ -1,9 +1,13 @@
 <!DOCTYPE html>
 <html>
   <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Loading...</title>
     <style>
       body {
+        margin: 0;
         background: #ffffff;
         display: flex;
         justify-content: center;
@@ -12,15 +16,125 @@
         flex-direction: column;
         font-family: 'Segoe UI', sans-serif;
         color: #0a3a71;
+        transition: opacity 0.4s ease-out;
       }
+
+      h2 {
+        margin: 10px;
+        font-size: 20px;
+        letter-spacing: 1px;
+        animation: fadeIn 0.8s ease-out;
+      }
+
       img {
         width: 150px;
         margin-bottom: 15px;
+        animation: fadeIn 0.8s ease-out;
+      }
+      .spinner {
+        margin-top: 10px;
+        width: 30px;
+        height: 30px;
+        border: 4px solid #d3d3d3;
+        border-top: 4px solid #0a3a71;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+
+      p.loading-text {
+        margin-top: 12px;
+        font-size: 14px;
+        color: #555;
+        animation: fadeIn 1s ease-out 0.4s forwards;
+        opacity: 0;
+      }
+
+      .progress-bar {
+        width: 290px;
+        height: 6px;
+        margin-top: 18px;
+        background: #eee;
+        border-radius: 10px;
+        overflow: hidden;
+      }
+
+      .progress-bar-inner {
+        width: 0%;
+        height: 100%;
+        background-color: #0a3a71;
+        animation: progress 2.5s ease forwards;
+      }
+
+      @keyframes progress {
+        0% {
+          width: 0%;
+        }
+        100% {
+          width: 100%;
+        }
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      @keyframes fadeIn {
+        from {
+          opacity: 0;
+          transform: translateY(10px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      @media (max-width: 500px) {
+        h2 {
+          font-size: 16px;
+        }
+        img {
+          width: 100px;
+        }
+      }
+
+      @media (prefers-color-scheme: dark) {
+        body {
+          background: #0a3a71;
+          color: white;
+        }
+        .spinner {
+          border: 4px solid #444;
+          border-top: 4px solid white;
+        }
+        p.loading-text {
+          color: #ccc;
+        }
+        .progress-bar {
+          background: #333;
+        }
+        .progress-bar-inner {
+          background: white;
+        }
       }
     </style>
   </head>
   <body>
     <img src="./assets/logo.png" alt="SAMAA Aerospace Logo" />
     <h2>LOAD TEST MONITOR</h2>
+    <div class="spinner"></div>
+    <p class="loading-text">Initializing...</p>
+    <div class="progress-bar"><div class="progress-bar-inner"></div></div>
+
+    <script>
+      setTimeout(() => {
+        document.body.style.opacity = '0'
+      }, 2400)
+    </script>
   </body>
 </html>

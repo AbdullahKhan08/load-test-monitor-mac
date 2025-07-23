@@ -1,21 +1,20 @@
-const fs = require('fs')
+const fs = require('fs-extra')
 const path = require('path')
-const { updateStatus } = require('./utils')
+const { updateStatus, logError } = require('./utils')
 const state = require('./state')
-
-const calibrationForm = document.getElementById('masterCalibrationForm')
+const { ipcRenderer } = require('electron')
 
 /**
  * Loads calibration data from disk and auto-fills the calibration form.
  * @param {HTMLFormElement} calibrationForm
  */
-function loadMasterCalibration(calibrationForm) {
+async function loadMasterCalibration(calibrationForm) {
   try {
-    const reportsDir = path.join(__dirname, 'reports')
-    const metadataFile = path.join(reportsDir, 'masterCalibration.json')
-    if (fs.existsSync(metadataFile)) {
-      const data = JSON.parse(fs.readFileSync(metadataFile, 'utf-8'))
-
+    const userDataPath = await ipcRenderer.invoke('get-user-data-path')
+    const testDataDir = path.join(userDataPath, 'Test Data')
+    const metadataFile = path.join(testDataDir, 'masterCalibration.json')
+    if (await fs.pathExists(metadataFile)) {
+      const data = await fs.readJSON(metadataFile)
       // Auto-fill calibration fields
       for (const [key, value] of Object.entries(data)) {
         const input = calibrationForm.querySelector(`[name="${key}"]`)
@@ -25,14 +24,13 @@ function loadMasterCalibration(calibrationForm) {
       const testMetadata = state.get('testMetadata') || {}
       testMetadata.calibration = { ...data }
       state.set('testMetadata', testMetadata)
-
-      console.log('✅ Calibration data loaded.')
-      updateStatus('✅ Calibration data loaded.', 'success')
+      updateStatus('✅ Master Calibration Equipment Data Loaded.', 'success')
     } else {
-      console.log('ℹ️ No calibration data found.')
+      console.log('ℹ️ No Master calibration data found.')
     }
   } catch (err) {
     console.error('❌ Failed to load calibration data:', err)
+    await logError('Failed to load calibration data', err)
   }
 }
 
@@ -68,7 +66,7 @@ function isCalibrationFormComplete(calibrationForm) {
  * @param {HTMLFormElement} calibrationForm
  * @returns {boolean}
  */
-function collectAndSaveCalibration(calibrationForm) {
+async function collectAndSaveCalibration(calibrationForm) {
   try {
     const formData = new FormData(calibrationForm)
     const dataObj = Object.fromEntries(formData.entries())
@@ -97,23 +95,26 @@ function collectAndSaveCalibration(calibrationForm) {
     }
     requiredFields.forEach((field) => (dataObj[field] = dataObj[field].trim()))
 
-    const reportsDir = path.join(__dirname, 'reports')
-    if (!fs.existsSync(reportsDir)) {
-      fs.mkdirSync(reportsDir, { recursive: true })
-    }
-    const metadataFile = path.join(reportsDir, 'masterCalibration.json')
-    fs.writeFileSync(metadataFile, JSON.stringify(dataObj, null, 2))
+    const userDataPath = await ipcRenderer.invoke('get-user-data-path')
+    const testDataDir = path.join(userDataPath, 'Test Data')
+    await fs.ensureDir(testDataDir)
+    const metadataFile = path.join(testDataDir, 'masterCalibration.json')
+    await fs.writeJson(metadataFile, dataObj, { spaces: 2 })
     // Save to state
     const testMetadata = state.get('testMetadata') || {}
     testMetadata.calibration = { ...dataObj }
     state.set('testMetadata', testMetadata)
 
     console.log(`✅ Calibration data saved: ${metadataFile}`)
-    updateStatus('✅ Calibration data saved.', 'success')
+    updateStatus('✅ Master Calibration Equipment Data Saved.', 'success')
     return true
   } catch (err) {
+    await logError('Error saving Master calibration equipment data', err)
     console.error('❌ Error saving calibration data:', err)
-    alert('❌ Failed to save calibration data.')
+    updateStatus(
+      'Status: Failed To Save Master Calibration Equipment Data',
+      'error'
+    )
     return false
   }
 }
@@ -123,18 +124,17 @@ function collectAndSaveCalibration(calibrationForm) {
  * @param {HTMLFormElement} equipmentForm
  * @returns {boolean}
  */
-function collectAndSaveEquipmentTest(equipmentForm) {
+function collectAndSaveEquipmentTest(equipmentForm, calibrationForm) {
   try {
-    // Check if calibration data exists
-
     const formData = new FormData(equipmentForm)
     const dataObj = Object.fromEntries(formData.entries())
 
     if (!isCalibrationFormComplete(calibrationForm)) {
-      alert(
-        '⚠️ Calibration data missing or incomplete. Please complete and save calibration data first.'
+      alert('⚠️ Master Calibration Equipment Data Missing or Incomplete.')
+      updateStatus(
+        'Status: Master Calibration Equipment Details incomplete.',
+        'error'
       )
-      updateStatus('Status: Master Calibration Details incomplete.', 'error')
       return false
     }
 
@@ -148,10 +148,17 @@ function collectAndSaveEquipmentTest(equipmentForm) {
       'ratedLoadCapacity',
       'proofLoadPercentage',
       'yearOfManufacture',
+      'testDate',
       'location',
       'testedBy',
       'certifiedBy',
     ]
+
+    if (!dataObj['testDate'] || dataObj['testDate'].trim() === '') {
+      const today = new Date()
+      dataObj['testDate'] = today.toLocaleDateString('en-GB')
+    }
+
     const missingFields = requiredFields.filter(
       (field) => !dataObj[field] || dataObj[field].trim() === ''
     )
@@ -184,8 +191,17 @@ function collectAndSaveEquipmentTest(equipmentForm) {
       'proofLoadDisplay'
     ).innerText = `Proof Load: ${proofLoad} t`
     const today = new Date()
-    const validityDate = new Date(today)
+    // Determine base date for validity
+    let baseDate = today
+    if (dataObj.testDate) {
+      const parsedDate = new Date(dataObj.testDate)
+      if (!isNaN(parsedDate)) {
+        baseDate = parsedDate
+      }
+    }
+    const validityDate = new Date(baseDate)
     validityDate.setFullYear(today.getFullYear() + 1)
+    validityDate.setDate(validityDate.getDate() - 1)
     dataObj.certificateValidity = validityDate.toLocaleDateString('en-GB')
 
     // Save equipment data to state while preserving calibration
@@ -195,12 +211,12 @@ function collectAndSaveEquipmentTest(equipmentForm) {
 
     // Enable start button after successful save
     console.log('✅ Equipment test data collected.')
-    updateStatus('✅ Equipment data saved.', 'success')
+    updateStatus('✅ Equipment Tested Data Daved.', 'success')
     return true
-    // startButton.disabled = false
   } catch (err) {
     console.error('❌ Error saving equipment test data:', err)
-    alert('❌ Failed to save equipment test data.')
+    logError('Error saving equipment test data', err)
+    updateStatus('Status: Failed To Save Test Tata', 'error')
     return false
   }
 }
@@ -232,6 +248,7 @@ function isTestMetadataComplete() {
     'equipmentSerialNo',
     'equipmentModelNo',
     'yearOfManufacture',
+    'testDate',
     'ratedLoadCapacity',
     'proofLoadPercentage',
     'location',
@@ -260,6 +277,19 @@ function isTestMetadataComplete() {
   return true
 }
 
+function populateTestMetadataFields(metadata = state.get('testMetadata')) {
+  if (!metadata || !metadata.equipment) return
+
+  const { testDate, location, testedBy, certifiedBy } = metadata.equipment
+
+  if (testDate) document.getElementById('testDate').value = testDate
+
+  if (location) document.getElementById('location').value = location
+
+  if (testedBy) document.getElementById('testedBy').value = testedBy
+  if (certifiedBy) document.getElementById('certifiedBy').value = certifiedBy
+}
+
 function resetEquipmentData() {
   const testMetadata = state.get('testMetadata') || {}
   testMetadata.equipment = {}
@@ -273,4 +303,5 @@ module.exports = {
   collectAndSaveEquipmentTest,
   isTestMetadataComplete,
   resetEquipmentData,
+  populateTestMetadataFields,
 }

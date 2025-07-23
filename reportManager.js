@@ -1,32 +1,37 @@
-const fs = require('fs')
+const fs = require('fs-extra')
 const path = require('path')
+const os = require('os')
 const PDFDocument = require('pdfkit')
 const { clearChart } = require('./chartManager')
-const { updateStatus, getTableData } = require('./utils')
-const { isTestMetadataComplete } = require('./formManager')
+const { updateStatus, getTableData, logError } = require('./utils')
+const {
+  isTestMetadataComplete,
+  populateTestMetadataFields,
+} = require('./formManager')
 const state = require('./state')
+const { ipcRenderer } = require('electron')
+const { v4: uuidv4 } = require('uuid')
+const { loadReports } = require('./reports')
 
 function downloadReport(startButton, stopButton, downloadButton) {
   try {
     const footerHeight = 15
     downloadButton.disabled = true
-    const testMetadata = state.get('testMetadata') // ✅ CHANGED
-    const chartData = state.get('chartData') // ✅ CHANGED
+    const testMetadata = state.get('testMetadata')
+    const chartData = state.get('chartData')
 
     if (!isTestMetadataComplete()) {
-      alert(
-        '⚠️ Calibration or Equipment data incomplete. Please save all data before downloading.'
-      )
-      updateStatus('Status: Data incomplete.', 'error')
+      alert('⚠️ Data Incomplete. Please Save All Data Before Downloading.')
+      updateStatus('Status: Data Incomplete.', 'error')
       downloadButton.disabled = false
       return
     }
 
     if (!state.get('isPolling') && (!testMetadata || !testMetadata.equipment)) {
       alert(
-        '⚠️ Equipment test data missing. Please complete and save before downloading.'
+        '⚠️ Tested Equipment Data Missing. Please Complete and Save Before Downloading.'
       )
-      updateStatus('Status: Equipment data missing.', 'error')
+      updateStatus('Status: Tested Equipment Data Missing.', 'error')
       downloadButton.disabled = false
       return
     }
@@ -38,14 +43,15 @@ function downloadReport(startButton, stopButton, downloadButton) {
       return
     }
 
-    const reportsDir = path.join(__dirname, 'reports')
-    if (!fs.existsSync(reportsDir)) {
-      fs.mkdirSync(reportsDir)
-    }
-
-    const fileName = `Load_Test_Certificate_${new Date()
-      .toISOString()
-      .replace(/[:.]/g, '-')}.pdf`
+    const downloadsDir = path.join(os.homedir(), 'Downloads')
+    const reportsDir = downloadsDir
+    const equipmentNameSanitized = (testMetadata.equipment?.equipmentName || '')
+      .replace(/[^a-z0-9]/gi, ' ')
+      .substring(0, 30)
+    const now = new Date()
+    const datePart = now.toISOString().split('T')[0] // YYYY-MM-DD
+    const timePart = now.toTimeString().split(' ')[0].replace(/:/g, '-') // HH-MM-SS
+    const fileName = `${equipmentNameSanitized} Load Test Certificate ${datePart}_${timePart}.pdf`
     const filePath = path.join(reportsDir, fileName)
 
     const doc = new PDFDocument({ margin: 50, autoFirstPage: true })
@@ -56,16 +62,16 @@ function downloadReport(startButton, stopButton, downloadButton) {
 
     function addFooter() {
       try {
-        pageNumber++ // increment first
-
+        pageNumber++
         const bottom = doc.page.margins.bottom
         doc.page.margins.bottom = 0
         const footerY = doc.page.height - 40
-        // Always show company name on ALL pages
+
         doc
           .fontSize(10)
           .fillColor('gray')
           .text('Samaa Aerospace LLP', 50, footerY, { align: 'left' })
+          .text('Load Test Monitor v1.0.0', 50, footerY + 12, { align: 'left' })
 
         // Show page number only from page 2 onwards
         if (pageNumber > 1) {
@@ -73,24 +79,29 @@ function downloadReport(startButton, stopButton, downloadButton) {
             align: 'right',
           })
         }
-        doc.text('', 50, 50) // reset cursor
+        doc.text('', 50, 50)
         doc.page.margins.bottom = bottom
       } catch (err) {
+        logError(err, 'Footer rendering error')
         console.error('⚠️ Footer rendering error:', err)
       }
     }
 
-    addFooter() // Footer on first page
+    addFooter()
     doc.on('pageAdded', addFooter)
 
     const x = doc.page.margins.left
     let y = doc.page.margins.top
     const rowHeight = 20
-    const companyName = testMetadata.companyName || 'AAR Indamer Technics'
-    const logoPath = path.join(__dirname, 'assets', 'indamer.png')
+    const settings = state.get('settings') || {}
+    const companyName = settings.companyName || 'Your Company Name'
+
+    const logoPath =
+      settings.logoPath || path.join(__dirname, 'assets', 'logo.png')
+
     if (fs.existsSync(logoPath)) {
-      const logoWidth = 80
-      const logoHeight = 60
+      const logoWidth = 83
+      const logoHeight = 65
       const logoX = doc.page.width - doc.page.margins.right - logoWidth
       const logoY = doc.page.margins.top
       doc.image(logoPath, logoX, logoY, {
@@ -116,10 +127,19 @@ function downloadReport(startButton, stopButton, downloadButton) {
     y = doc.y + 5
 
     // Test Date with "value" bold
-    const testDate = new Date().toLocaleDateString()
+    let baseDate = new Date()
+    if (testMetadata.equipment && testMetadata.equipment.testDate) {
+      const parsedDate = new Date(testMetadata.equipment.testDate)
+      if (!isNaN(parsedDate)) {
+        baseDate = parsedDate
+      }
+    }
+    const testDate = baseDate.toLocaleDateString('en-GB')
+
     //  Calculate certificate validity (1 year from test date)
-    const validityDate = new Date()
+    const validityDate = new Date(baseDate)
     validityDate.setFullYear(validityDate.getFullYear() + 1)
+    validityDate.setDate(validityDate.getDate() - 1)
     const validityDateStr = validityDate.toLocaleDateString()
     doc
       .fontSize(8)
@@ -128,7 +148,7 @@ function downloadReport(startButton, stopButton, downloadButton) {
       .text('Test Date: ', x, y, { continued: true })
       .font('Helvetica-Bold')
       .text(testDate)
-    y = doc.y + 7 // add extra space before metadata block
+    y = doc.y + 7
     doc
       .fontSize(8)
       .fillColor('black')
@@ -137,17 +157,14 @@ function downloadReport(startButton, stopButton, downloadButton) {
       .font('Helvetica-Bold')
       .text(validityDateStr)
 
-    y = doc.y + 15 // Adjust spacing before metadata table
+    y = doc.y + 15
 
     // === METADATA TABLE ===
     // 1) Remove redundant keys and remove proofLoad
-    const metadataEntries = Object.entries(testMetadata).filter(
-      ([key]) => !['testedBy', 'certifiedBy', 'proofLoad'].includes(key)
-    )
-
     const calibrationEntries = Object.entries(testMetadata.calibration || {})
     const equipmentEntries = Object.entries(testMetadata.equipment || {})
 
+    const masterEntries = calibrationEntries
     const filteredEquipmentEntries = equipmentEntries.filter(
       ([key]) =>
         ![
@@ -155,43 +172,9 @@ function downloadReport(startButton, stopButton, downloadButton) {
           'testedBy',
           'certifiedBy',
           'certificateValidity',
+          'testDate',
         ].includes(key)
     )
-
-    // 2) Segregate Master & Tested fields while maintaining current field names
-    // const masterFieldKeys = [
-    //   'loadCellPartNo',
-    //   'loadCellSerialNo',
-    //   'loadCellModelNo',
-    //   'loadCellLastCalibrationDate',
-    //   'loadCellCalibrationValidity',
-    //   'displayPartNo',
-    //   'displaySerialNo',
-    //   'displayModelNo',
-    //   'displayLastCalibrationDate',
-    //   'displayCalibrationValidity',
-    // ]
-    // const testedFieldKeys = [
-    //   'equipmentName',
-    //   'typeOfEquipment',
-    //   'equipmentPartNo',
-    //   'equipmentSerialNo',
-    //   'equipmentModelNo',
-    //   'yearOfManufacture',
-    //   'ratedLoadCapacity',
-    //   'proofLoadPercentage',
-    //   'location',
-    // ]
-
-    // const masterEntries = metadataEntries.filter(([key]) =>
-    //   masterFieldKeys.includes(key)
-    // )
-    // const testedEntries = metadataEntries.filter(([key]) =>
-    //   testedFieldKeys.includes(key)
-    // )
-
-    const masterEntries = calibrationEntries
-    // const testedEntries = equipmentEntries
 
     const renderSection = (title, entries) => {
       // Add section heading
@@ -214,7 +197,7 @@ function downloadReport(startButton, stopButton, downloadButton) {
           doc.page.margins.right -
           colGap) /
         2
-      const keyWidth = 130 // slightly increased for breathing space
+      const keyWidth = 130
       const valueWidth = colWidth - keyWidth - 10
       const adjustedRowHeight = 22
 
@@ -284,14 +267,14 @@ function downloadReport(startButton, stopButton, downloadButton) {
         y += rowHeight
       }
 
-      y += 15 // spacing between sections
+      y += 15
     }
 
     // === Render the sections ===
-    renderSection('Master Calibration Data', masterEntries)
+    renderSection('Master Calibration Equipment Data', masterEntries)
     renderSection('Tested Equipment Data', filteredEquipmentEntries)
 
-    y += 10 // Padding before chart
+    y += 10
 
     const chartCanvas = document.getElementById('loadChart')
     if (chartCanvas) {
@@ -307,7 +290,7 @@ function downloadReport(startButton, stopButton, downloadButton) {
         .fillColor('black')
         .text('Load vs Time Chart:', doc.page.margins.left, y, {
           align: 'center',
-          width: pageWidth, // ensure true centering
+          width: pageWidth,
         })
       y = doc.y + 5
       doc.image(chartImage, imageX, y, {
@@ -327,10 +310,10 @@ function downloadReport(startButton, stopButton, downloadButton) {
           y,
           {
             align: 'center',
-            width: pageWidth, // ensure true centering
+            width: pageWidth,
           }
         )
-      y = doc.y + 15
+      y = doc.y + 20
       doc
         .font('Helvetica-Bold')
         .fontSize(10)
@@ -345,7 +328,6 @@ function downloadReport(startButton, stopButton, downloadButton) {
         )
 
       y = doc.y + 15
-      //   y += imageHeight + 20
     }
     y += 20
     // === SIGNATURE BLOCK ===
@@ -359,13 +341,10 @@ function downloadReport(startButton, stopButton, downloadButton) {
         y
       )
     y += 15
-    // doc.font('Helvetica').text(`Location: ${testMetadata.location || ''}`, x, y)
-    // y += 15
 
     // === FORCE TEST DATA TO NEW PAGE ===
     doc.addPage()
     y = doc.page.margins.top
-    // doc.fontSize(14).text('Test Data:', { underline: true })
     y = doc.y + 10
 
     const colTimeWidth = 180
@@ -447,71 +426,122 @@ function downloadReport(startButton, stopButton, downloadButton) {
       y += rowHeight
     })
 
-    // y += 30
-
     doc.end()
 
-    stream.on('finish', () => {
-      alert(`✅ PDF report saved as ${fileName}`)
-      const testsFilePath = path.join(reportsDir, 'tests.json')
-      let tests = []
-      if (fs.existsSync(testsFilePath)) {
-        try {
-          tests = JSON.parse(fs.readFileSync(testsFilePath, 'utf-8'))
-        } catch (e) {
-          console.error(
-            '⚠️ Could not parse existing tests.json. Initializing fresh.',
-            e
-          )
+    stream.on('finish', async () => {
+      try {
+        const userDataPath = await ipcRenderer.invoke('get-user-data-path')
+        const testDataDir = path.join(userDataPath, 'Test Data')
+        const testsFilePath = path.join(testDataDir, 'tests.json')
+        await fs.ensureDir(testDataDir)
+        let tests = []
+        if (fs.existsSync(testsFilePath)) {
+          try {
+            tests = JSON.parse(fs.readFileSync(testsFilePath, 'utf-8'))
+          } catch (e) {
+            console.error(
+              '⚠️ Could not parse existing tests.json. Initializing fresh.',
+              e
+            )
+            await logError('⚠️ Failed to parse tests.json', e)
+          }
         }
+
+        const peakValue = Number(state.get('peakValue') || 0)
+        if (!testMetadata || !chartData || !Array.isArray(chartData)) {
+          console.warn('⚠️ Missing test data for JSON.')
+          return
+        }
+        const pdfBackupDir = path.join(testDataDir, 'PDFs')
+        await fs.ensureDir(pdfBackupDir)
+        const testEntry = {
+          id: uuidv4(),
+          metadata: testMetadata,
+          chartData: chartData,
+          peakValue: peakValue,
+          filePath: filePath,
+          backupPath: path.join(pdfBackupDir, fileName),
+        }
+        tests.push(testEntry)
+        try {
+          fs.writeFileSync(testsFilePath, JSON.stringify(tests, null, 2))
+          console.log('✅ Test metadata saved to tests.json')
+        } catch (err) {
+          console.error('❌ Failed to write test metadata:', err)
+          await logError('❌ Failed to write test metadata to tests.json', err)
+          updateStatus('Could not save test data to file.', 'error')
+          return
+        }
+        console.log(`📄 PDF report saved at: ${filePath}`)
+        // ✅ Backup PDF to internal storage
+        try {
+          const internalPdfDir = path.join(testDataDir, 'PDFs')
+          await fs.ensureDir(internalPdfDir)
+          const backupFilePath = path.join(internalPdfDir, fileName)
+          await fs.copy(filePath, backupFilePath)
+          console.log(`📂 Internal backup saved at: ${backupFilePath}`)
+        } catch (e) {
+          console.error('⚠️ Failed to backup PDF internally:', e)
+          await logError('⚠️ Failed to backup PDF internally', e)
+        }
+        await loadReports()
+        const currentMetadata = state.get('testMetadata') || {}
+        const settings = state.get('settings') || {}
+        const preservedFields = {
+          calibration: currentMetadata.calibration || {},
+          equipment: {
+            testDate:
+              currentMetadata.equipment?.testDate ||
+              new Date().toISOString().split('T')[0],
+            location:
+              currentMetadata.equipment?.location ||
+              settings.defaultTestLocation ||
+              'Default Test Location',
+            testedBy: currentMetadata.equipment?.testedBy || '',
+            certifiedBy: currentMetadata.equipment?.certifiedBy || '',
+          },
+        }
+
+        state.set('testMetadata', {
+          ...preservedFields,
+        })
+        state.set('chartData', [])
+        state.set('peakValue', 0)
+        clearChart()
+        setTimeout(() => renderChart([], 0), 200)
+        document.getElementById('dataTableBody').innerHTML = ''
+        const equipmentForm = document.getElementById('equipmentTestForm')
+        if (equipmentForm) equipmentForm.reset()
+        populateTestMetadataFields()
+        alert(`✅ PDF report saved as ${fileName}`)
+        // ✅ Optionally reset status and live readings
+        // document.getElementById(
+        //   'proofLoadDisplay'
+        // ).innerText = `Proof Load: 0.000 t`
+        // document.getElementById('loadValue').innerText = '0.000 t / 0.00 kN'
+        // document.getElementById('lastTimestamp').innerText = 'Last Update: -'
+        //  document.getElementById('peakDisplay').innerText = 'Peak Load: 0.000 t'
+        updateStatus('Status: Ready', 'success')
+      } catch (err) {
+        await logError('❌ Unexpected error in report finalization', err)
+        updateStatus('Something went wrong finalizing the report.', 'error')
+      } finally {
+        startButton.disabled = false
+        stopButton.disabled = true
+        downloadButton.disabled = false
       }
-
-      tests.push({
-        id: new Date().toISOString(),
-        metadata: testMetadata,
-        chartData: chartData,
-        peakValue: state.get('peakValue'), // ✅ CHANGED
-        filePath: filePath,
-      })
-
-      fs.writeFileSync(testsFilePath, JSON.stringify(tests, null, 2))
-      console.log('✅ Test data appended to tests.json')
-
-      console.log(`📄 PDF report saved: ${filePath}`)
-      // === Clear state ===
-
-      // Reset system
-
-      const updatedMetadata = { ...testMetadata, equipment: {} }
-      state.set('testMetadata', updatedMetadata)
-      state.set('chartData', [])
-      state.set('peakValue', 0)
-      clearChart()
-      document.getElementById('dataTableBody').innerHTML = ''
-      const equipmentForm = document.getElementById('equipmentTestForm')
-      if (equipmentForm) equipmentForm.reset()
-
-      // ✅ Optionally reset status and live readings
-      // document.getElementById(
-      //   'proofLoadDisplay'
-      // ).innerText = `Proof Load: 0.000 t`
-      //   document.getElementById('loadValue').innerText = ''
-      //   document.getElementById('lastTimestamp').innerText = ''
-      //  document.getElementById('peakDisplay').innerText = 'Peak Load: 0.000 t'
-      updateStatus('Status: Ready', 'success')
-      startButton.disabled = false
-      stopButton.disabled = true
-      downloadButton.disabled = false
     })
 
     stream.on('error', (err) => {
+      logError(err)
       console.error('❌ PDF generation error:', err)
-      alert('❌ Failed to generate PDF report. Check console for details.')
+      updateStatus('Failed To Generate PDF Report.', 'error')
       downloadButton.disabled = false
     })
   } catch (err) {
     console.error('❌ Unexpected error during PDF generation:', err)
-    alert('❌ Unexpected error during PDF generation.')
+    logError(err)
+    updateStatus('Unexpected error during PDF generation.', 'error')
     document.getElementById('downloadButton').disabled = false
   }
 }

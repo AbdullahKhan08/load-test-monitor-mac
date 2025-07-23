@@ -10,8 +10,12 @@ class StateManager extends EventEmitter {
       chartData: [],
       peakValue: 0,
       isPolling: false,
-      chartInstance: null, // ✅ ADDED for Chart.js management
-      settings: {}, // ✅ ADDED: settings object (company name, logo, footer)
+      chartInstance: null,
+      settings: {},
+      isDeviceConnected: false,
+      lastLoadTons: 0,
+      lastPushTime: 0,
+      connectInProgress: false,
     }
   }
 
@@ -20,8 +24,13 @@ class StateManager extends EventEmitter {
   }
 
   set(key, value) {
+    if (!(key in this.state)) {
+      console.warn(`⚠️ Attempt to set unknown state key: ${key}`)
+      return // ⛔ avoid setting unknown keys
+    }
     this.state[key] = value
     this.emit('change', { key, value })
+    console.log(`🔄 State updated: ${key}`, value)
   }
 
   subscribe(callback) {
