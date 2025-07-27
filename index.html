@@ -127,7 +127,7 @@
 
         <form id="equipmentTestForm">
           <!-- Tested Equipment -->
-          <h3>Equipment Tested</h3>
+          <h3>Equipment Under Test</h3>
           <label
             >Equipment Name<input type="text" name="equipmentName" required
           /></label>
@@ -197,7 +197,7 @@
         </form>
 
         <div id="controlBar">
-          <button id="refreshPortsBtn" type="button">🔄 Refresh Ports</button>
+          <button id="refreshPortsBtn" type="button">Refresh Ports</button>
           <select id="serialPortSelect" autocomplete="off">
             <option value="">Select Serial Port</option>
           </select>
@@ -266,12 +266,7 @@
           <h3>Organization Settings</h3>
           <label>
             Company Name
-            <input
-              type="text"
-              name="companyName"
-              id="companyNameInput"
-              required
-            />
+            <input type="text" name="companyName" id="companyNameInput" />
           </label>
           <label>
             Default Test Location
@@ -279,7 +274,6 @@
               type="text"
               name="defaultTestLocation"
               id="defaultLocationInput"
-              required
             />
           </label>
 
@@ -296,7 +290,7 @@
         </form>
       </div>
     </div>
-
+    <div id="modal-root"></div>
     <script src="./renderer.js"></script>
     <script>
       // PAGE SWITCHING
